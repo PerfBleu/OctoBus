@@ -81,3 +81,50 @@ docker/smoke.sh octobus:dev
 
 The smoke script compiles the binary for the Docker daemon's architecture
 itself, so no manual build step is needed for it.
+
+## Offline image (`Dockerfile.offline`)
+
+`docker/Dockerfile.offline` bakes the whole `services/` tentacles tree into the
+image at build time. The builder stage runs `npm install` in `services/` and
+`octobus service import --recursive --offline --build auto`, then copies the
+resulting registry and artifacts into `/var/lib/octobus` in the runtime image.
+No network access is required to **import** those services after the image is
+built; you still need `node` at **runtime** to start instances.
+
+Build:
+
+```bash
+mkdir -p dist
+GOOS=linux GOARCH=amd64 bash ./scripts/build-octobus.sh dist/octobus-linux-amd64
+docker build -f docker/Dockerfile.offline -t octobus:offline .
+```
+
+The build needs network access to download npm packages and compile descriptors.
+`Dockerfile.offline` defaults to the `npmmirror.com` npm registry
+(`https://registry.npmmirror.com`); override with
+`docker build --build-arg NPM_REGISTRY=https://registry.npmjs.org ...`.
+The image is large (all service runtimes and shared `node_modules` trees).
+
+Run on first start with an admin bootstrap token (the baked data directory does
+not contain admin tokens):
+
+```bash
+docker run --rm \
+  -p 9000:9000 \
+  -e OCTOBUS_BOOTSTRAP_ADMIN_TOKEN=... \
+  -v octobus-offline-data:/var/lib/octobus \
+  octobus:offline
+```
+
+List pre-imported services without further import:
+
+```bash
+docker run --rm \
+  -e OCTOBUS_ADMIN_TOKEN=... \
+  --network host \
+  octobus:offline service list --addr 127.0.0.1:9000
+```
+
+Use a named volume or ensure the host bind mount is empty on first run so Docker
+copies the baked `/var/lib/octobus` content into the volume. Creating instances
+and capsets still requires admin API access; only `service import` is skipped.
