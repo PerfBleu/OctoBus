@@ -96,13 +96,37 @@ Build:
 ```bash
 mkdir -p dist
 GOOS=linux GOARCH=amd64 bash ./scripts/build-octobus.sh dist/octobus-linux-amd64
-docker build -f docker/Dockerfile.offline -t octobus:offline .
+docker buildx build --progress=plain -f docker/Dockerfile.offline -t octobus:offline .
 ```
 
+Use `--progress=plain` so apt/npm lines stream in the log (default BuildKit UI
+hides them until a whole `RUN` finishes). The Dockerfile splits slow steps
+(apt, Node tarball, `sdk ci`, `services install`, tentacles bake) into
+separate layers and mounts apt/npm caches to speed rebuilds.
+
+`linux/arm64` on an amd64 host runs under QEMU: apt and npm are much slower
+than native amd64; prefer `GOARCH=arm64` on an arm64 machine when possible.
+Most wall time in `Dockerfile.offline` is usually `services install` and
+`bake-tentacles-data.sh`, not apt.
+
 The build needs network access to download npm packages and compile descriptors.
-`Dockerfile.offline` defaults to the `npmmirror.com` npm registry
-(`https://registry.npmmirror.com`); override with
+Image builds rewrite Ubuntu apt sources to `http://mirrors.ustc.edu.cn/ubuntu`
+over HTTP (USTC does not require TLS for apt; HTTPS fails before
+`ca-certificates` is installed, especially under `buildx` QEMU). ARM images
+use `ubuntu-ports` when the base image points at `ports.ubuntu.com`.
+Node.js is installed from `NODE_DIST_BASE` (default
+`https://mirrors.tuna.tsinghua.edu.cn/nodejs-release`; USTC's `nodejs-release`
+path currently 404s for current versions), not Ubuntu's `nodejs`/`npm` packages — the
+Debian-packaged `npm` breaks under `buildx` QEMU with
+`Security violation: Requested utility env does not match executable name`.
+The same check rejects the official tarball's `#!/usr/bin/env node` shebang
+under QEMU, so the image replaces `npm`/`npx`/`corepack` with wrappers that
+exec `/usr/local/bin/node` directly.
+`Dockerfile.offline` npm packages use `https://registry.npmmirror.com`.
+`https://mirrors.ustc.edu.cn/npm/` currently returns 404 for package metadata
+and tarballs, so it cannot be used as an npm registry. Override with
 `docker build --build-arg NPM_REGISTRY=https://registry.npmjs.org ...`.
+Optional: `--build-arg NODE_DIST_BASE=https://npmmirror.com/mirrors/node`.
 The image is large (all service runtimes and shared `node_modules` trees).
 
 Run on first start with an admin bootstrap token (the baked data directory does
